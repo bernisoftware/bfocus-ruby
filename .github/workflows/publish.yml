@@ -1,0 +1,136 @@
+# Publica a gem `bfocus` no RubyGems ao dar push de uma tag vX.Y.Z no espelho público
+# bernisoftware/bfocus-ruby (o scripts/release-sdks.sh do monorepo espelha clients/ruby e cria
+# a tag).
+#
+# PUBLICAR EXIGE SUÍTE VERDE — no piso (3.0) e no teto (3.3) testados do required_ruby_version,
+# contra a árvore E contra a gem construída. No bZapper, três versões foram publicadas com os
+# envios de mídia quebrados porque o workflow ia direto do build para o upload.
+#
+# Autenticação no RubyGems — Trusted Publishing (OIDC), sem segredo guardado: em rubygems.org →
+# Profile → Pending trusted publishers → Create: gem `bfocus`, owner `bernisoftware`, repo
+# `bfocus-ruby`, workflow `publish.yml`, environment `rubygems`. Vale para o 1º push da gem nova;
+# depois vira publisher normal da gem.
+#
+# Alternativa: secret RUBYGEMS_API_KEY (escopo "Push rubygem"; conta com MFA em "UI and gem
+# signin" e a chave SEM MFA, senão o gem push pede OTP e o CI trava). Com o secret, ele é usado.
+# Não ligue `rubygems_mfa_required` no gemspec: com ele, todo `gem push` por chave pede OTP.
+name: publish
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  # Piso e teto: required_ruby_version >= 3.0.
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        ruby-version: ['3.0', '3.3']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby-version }}
+          bundler-cache: true # bundle install (só minitest e rake; a gem não tem deps)
+      # Conformidade (test/fixtures/conformance/cases.json) + unitários + versão.
+      - run: bundle exec rake test
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+
+      # A tag é a versão publicada. O bump e a tag são passos separados no release-sdks.sh:
+      # se divergirem, o RubyGems receberia um número diferente do que a tag promete.
+      - name: A tag bate com Bfocus::VERSION e com o gemspec
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          code="$(ruby -e 'load "lib/bfocus/version.rb"; print Bfocus::VERSION')"
+          spec="$(ruby -e 'print Gem::Specification.load("bfocus.gemspec").version')"
+          [ "$tag" = "$code" ] || { echo "::error::tag $GITHUB_REF_NAME != Bfocus::VERSION $code"; exit 1; }
+          [ "$code" = "$spec" ] || { echo "::error::Bfocus::VERSION $code != gemspec $spec"; exit 1; }
+          echo "versão $code confirmada"
+
+      - run: gem build bfocus.gemspec
+
+      - name: A gem leva só lib/, README.md e LICENSE
+        run: |
+          gem="bfocus-${GITHUB_REF_NAME#v}.gem"
+          [ -f "$gem" ] || { echo "::error::$gem não foi gerado"; ls -la; exit 1; }
+          files="$(ruby -rrubygems/package -e 'puts Gem::Package.new(ARGV[0]).spec.files' "$gem")"
+          echo "$files"
+          if echo "$files" | grep -Ev '^(lib/.+\.rb|README\.md|LICENSE)$'; then
+            echo "::error::arquivo inesperado dentro da gem"; exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gem
+          path: bfocus-*.gem
+          if-no-files-found: error
+
+  # A suíte roda de novo, agora contra a GEM instalada — pega erro de empacotamento (arquivo
+  # que ficou de fora do spec.files). Sem `-Ilib` e sem bundler: o `require "bfocus"` resolve
+  # para a gem instalada, e o test_helper aborta se carregar o ./lib por engano.
+  verify-gem:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        ruby-version: ['3.0', '3.3']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby-version }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: gem
+          path: pkg/
+      - name: Suíte contra a gem construída
+        run: |
+          gem install --local --no-document pkg/bfocus-*.gem
+          gem install --no-document minitest -v '~> 5.16'
+          cd /tmp
+          BFOCUS_TEST_AGAINST_GEM=1 ruby -w -I"$GITHUB_WORKSPACE/test" \
+            -e 'Dir.glob(File.join(ENV.fetch("GITHUB_WORKSPACE"), "test/**/*_test.rb")).sort.each { |f| require f }'
+
+  publish:
+    needs: [build, verify-gem] # sem suíte verde (árvore + gem) não sobe nada
+    runs-on: ubuntu-latest
+    environment:
+      name: rubygems
+      url: https://rubygems.org/gems/bfocus
+    permissions:
+      contents: read
+      id-token: write # Trusted Publishing (OIDC)
+    env:
+      RUBYGEMS_API_KEY_SECRET: ${{ secrets.RUBYGEMS_API_KEY }}
+    steps:
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+      - uses: actions/download-artifact@v4
+        with:
+          name: gem
+          path: pkg/
+
+      # Sem o secret: credencial de curta duração pelo Trusted Publishing.
+      - name: Credencial do RubyGems (Trusted Publishing)
+        if: env.RUBYGEMS_API_KEY_SECRET == ''
+        uses: rubygems/configure-rubygems-credentials@v1.0.0
+
+      - name: gem push
+        run: |
+          if [ -n "$RUBYGEMS_API_KEY_SECRET" ]; then export GEM_HOST_API_KEY="$RUBYGEMS_API_KEY_SECRET"; fi
+          gem push pkg/bfocus-*.gem

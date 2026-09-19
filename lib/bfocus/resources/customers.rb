@@ -101,8 +101,37 @@ module Bfocus
       end
     end
 
+    # Identificadores extras de um cliente — `client.customers.identifiers`: liga o id de OUTRO
+    # sistema seu (CRM, loja…) ao mesmo cadastro, que passa a ser encontrado por qualquer um deles.
+    #
+    # Retorno: o cliente + `"identifiers"` (lista de `{"external_id", "label", "source"}`).
+    # Id que já pertence a outro cadastro: `ConflictError` com `code == "IDENTIFIER_IN_USE"`.
+    class CustomerIdentifiers < Base
+      # Liga `extra_id` ao cliente (idempotente).
+      # `PUT /customers/{external_id}/identifiers/{extra_id}`
+      #
+      # @param label [String, nil] rótulo livre (ex.: `"CRM"`). Não informado = sem corpo.
+      # @return [Hash] o cliente com `"identifiers"`.
+      def add(external_id, extra_id, label: UNSET, idempotency_key: nil, timeout: nil)
+        ext = segment(external_id, "external_id")
+        extra = segment(extra_id, "extra_id")
+        body = label.equal?(UNSET) ? nil : { "label" => label }
+        call("PUT", "/customers/#{ext}/identifiers/#{extra}",
+             body: body, idempotency_key: idempotency_key, timeout: timeout)
+      end
+
+      # Desliga `extra_id` do cliente. `DELETE /customers/{external_id}/identifiers/{extra_id}`
+      # @return [Hash] o cliente com `"identifiers"`.
+      def remove(external_id, extra_id, idempotency_key: nil, timeout: nil)
+        ext = segment(external_id, "external_id")
+        extra = segment(extra_id, "extra_id")
+        call("DELETE", "/customers/#{ext}/identifiers/#{extra}",
+             idempotency_key: idempotency_key, timeout: timeout)
+      end
+    end
+
     # Clientes (empresas) — `client.customers`. Sub-recursos: {#contacts}, {#products},
-    # {#interactions}.
+    # {#interactions}, {#identifiers}.
     #
     # Cliente: `"id"`, `"external_id"`, `"name"`, `"document"`, `"email"`, `"phone"`,
     # `"website"`, `"notes"`, `"custom_fields"` (lista de `{"key", "label", "type", "value",
@@ -114,12 +143,15 @@ module Bfocus
       attr_reader :products
       # @return [CustomerInteractions]
       attr_reader :interactions
+      # @return [CustomerIdentifiers]
+      attr_reader :identifiers
 
       def initialize(transport)
         super
         @contacts = CustomerContacts.new(transport)
         @products = CustomerProducts.new(transport)
         @interactions = CustomerInteractions.new(transport)
+        @identifiers = CustomerIdentifiers.new(transport)
       end
 
       # Cria ou atualiza um cliente pelo `external_id` do seu sistema. `PUT /customers/{external_id}`
@@ -135,6 +167,31 @@ module Bfocus
           "website" => website, "notes" => notes, "custom_fields" => custom_fields
         )
         call("PUT", "/customers/#{ext}", body: body, idempotency_key: idempotency_key, timeout: timeout)
+      end
+
+      # Cria/atualiza até {Bfocus::BATCH_MAX} (500) clientes numa chamada. `POST /customers/batch`
+      #
+      # Cada item (Hash, chaves string ou símbolo) tem `external_id` (obrigatório) e os mesmos
+      # campos do {#upsert}, com a mesma regra: ausente = não muda; `nil` limpa.
+      #
+      # A SDK **não divide** o lote: mais de 500 itens lança `ArgumentError` antes de qualquer
+      # requisição (use `items.each_slice(Bfocus::BATCH_MAX)`); o `"index"` de cada resultado é
+      # a posição no lote enviado. Um item com erro não desfaz os outros. Lista vazia devolve o
+      # resultado zerado sem chamar a API.
+      #
+      # @return [Hash] `{"results" => [{"index", "status", "external_id", "merged_into", "error",
+      #   "code"}, …], "summary" => {"created", "updated", "unchanged", "error"}}` —
+      #   `"status"` ∈ `created`/`updated`/`unchanged`/`error`; `"error"` é o código estável e
+      #   `"code"` o status HTTP do item.
+      # @raise [ArgumentError] mais de 500 itens ou item sem `external_id`.
+      # @raise [TypeError] `items` não é lista de Hash.
+      def batch(items, idempotency_key: nil, timeout: nil)
+        list = batch_items(items, "customers.batch")
+        return empty_batch_result if list.empty?
+
+        list.each_with_index { |item, index| batch_id!(item, "external_id", "customers.batch", index) }
+        call("POST", "/customers/batch",
+             body: { "items" => list }, idempotency_key: idempotency_key, timeout: timeout)
       end
 
       # Um cliente. `GET /customers/{external_id}`

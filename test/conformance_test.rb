@@ -30,6 +30,15 @@ module Conformance
     "customers.list" => ->(c) { c.customers.method(:list) },
     "customers.list_all" => ->(c) { c.customers.method(:list_all) },
     "customers.delete" => ->(c) { c.customers.method(:delete) },
+    "customers.batch" => ->(c) { c.customers.method(:batch) },
+    "customers.identifiers.add" => ->(c) { c.customers.identifiers.method(:add) },
+    "customers.identifiers.remove" => ->(c) { c.customers.identifiers.method(:remove) },
+    "people.upsert" => ->(c) { c.people.method(:upsert) },
+    "people.list" => ->(c) { c.people.method(:list) },
+    "people.delete" => ->(c) { c.people.method(:delete) },
+    "people.batch" => ->(c) { c.people.method(:batch) },
+    "people.identifiers.add" => ->(c) { c.people.identifiers.method(:add) },
+    "people.identifiers.remove" => ->(c) { c.people.identifiers.method(:remove) },
     "customers.contacts.list" => ->(c) { c.customers.contacts.method(:list) },
     "customers.contacts.upsert" => ->(c) { c.customers.contacts.method(:upsert) },
     "customers.contacts.delete" => ->(c) { c.customers.contacts.method(:delete) },
@@ -243,7 +252,7 @@ class ConformanceCoverageTest < Minitest::Test
   include Conformance
 
   def test_os_casos_foram_carregados
-    assert_operator CASES.fetch("cases").size, :>=, 51
+    assert_operator CASES.fetch("cases").size, :>=, 66
     assert_equal 1, CASES.fetch("version")
   end
 
@@ -298,6 +307,21 @@ class SignatureVectorsTest < Minitest::Test
     vectors.each do |vector|
       got = Bfocus.sign_widget_identity(vector["secret"], vector["user_external_id"], vector["customer_external_id"])
       assert_equal vector["expected"], got, "vetor #{vector['user_external_id']}"
+    end
+  end
+
+  def test_vetores_v2
+    vectors = Conformance::CASES.fetch("signatures_v2")
+    refute_empty vectors
+    vectors.each do |vector|
+      got = Bfocus.sign_widget_identity_v2(vector["secret"], vector["user_external_id"],
+                                           vector["customer_external_id"], now: vector["timestamp"])
+      assert_equal vector["expected"], got, "vetor v2 #{vector['user_external_id']}"
+      at = Time.at(vector["timestamp"] + 0.9)
+      assert_equal vector["expected"],
+                   Bfocus.sign_widget_identity_v2(vector["secret"], vector["user_external_id"],
+                                                  vector["customer_external_id"], now: at),
+                   "Time com fração vira segundos inteiros (floor)"
     end
   end
 end

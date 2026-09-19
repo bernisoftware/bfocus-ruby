@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# SDK oficial em Ruby da API pública do bFocus: clientes, produtos, release notes, base de
+# SDK oficial em Ruby da API pública do bFocus: clientes, pessoas, produtos, release notes, base de
 # conhecimento e agentes de IA. Só biblioteca padrão (net/http, json, openssl, securerandom).
 #
 # @example
@@ -26,6 +26,7 @@ require_relative "bfocus/codec"
 require_relative "bfocus/transport"
 require_relative "bfocus/resources/base"
 require_relative "bfocus/resources/customers"
+require_relative "bfocus/resources/people"
 require_relative "bfocus/resources/products"
 require_relative "bfocus/resources/release_notes"
 require_relative "bfocus/resources/knowledge_base"

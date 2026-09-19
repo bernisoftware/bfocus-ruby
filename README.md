@@ -1,7 +1,7 @@
 # bfocus
 
-SDK oficial em **Ruby** da API pública do [bFocus](https://bfocus.com.br): clientes, produtos,
-release notes, base de conhecimento e agentes de IA.
+SDK oficial em **Ruby** da API pública do [bFocus](https://bfocus.com.br): clientes, pessoas,
+produtos, release notes, base de conhecimento e agentes de IA.
 
 Zero dependências de runtime (só biblioteca padrão: `net/http`, `json`, `openssl`,
 `securerandom`) · Ruby 3.0+ · novas tentativas e idempotência automáticas.
@@ -93,8 +93,8 @@ Construir o cliente não faz nenhuma chamada de rede. O cliente não guarda esta
   escrita aceitam `idempotency_key:` (veja [Novas tentativas](#novas-tentativas-e-idempotência)).
 - Datas (`updated_since`) aceitam `Time`/`DateTime` — convertidos para ISO 8601 em UTC com `Z` —,
   `Date` (meia-noite UTC) ou string, que passa como veio.
-- Hashes de entrada (`custom_fields`, itens do `batch_upsert`, `history`) aceitam chaves símbolo
-  ou string.
+- Hashes de entrada (`custom_fields`, itens do `batch_upsert`/`customers.batch`/`people.batch`,
+  `history`) aceitam chaves símbolo ou string.
 
 ## Clientes
 
@@ -137,6 +137,143 @@ client.customers.interactions.create("ERP 1042", "Pedido 1042 faturado.",
 client.customers.interactions.list_all("ERP 1042").each do |i|
   puts "#{i['created_at']} #{i['content']}"
 end
+```
+
+### Identificadores extras
+
+Ligue o id de **outro sistema seu** (CRM, loja, app…) ao mesmo cadastro: depois disso o cliente (ou
+a pessoa) é encontrado por qualquer um dos ids. É idempotente (ligar de novo não muda nada). Se o id
+já pertence a outro cadastro, a API recusa com `Bfocus::ConflictError` e `code == "IDENTIFIER_IN_USE"`.
+
+```ruby
+cliente = client.customers.identifiers.add("erp-1042", "crm-88", label: "CRM") # label é opcional
+cliente["identifiers"] # => [{"external_id" => "crm-88", "label" => "CRM", "source" => "api"}]
+client.customers.identifiers.remove("erp-1042", "crm-88")
+
+client.people.identifiers.add("app-77", "crm-p5")
+client.people.identifiers.remove("app-77", "crm-p5")
+```
+
+## Pessoas
+
+As pessoas (usuários do seu sistema) de cada cliente, em `client.people`. O `external_id` da pessoa
+é o mesmo `user_external_id` que você assina para o [widget](#identidade-do-widget).
+
+```ruby
+pessoa = client.people.upsert(
+  "erp-1042", "app-77",
+  name: "Paula Reis", email: "paula@padaria.example", role: "Financeiro", is_primary: true,
+  extra_emails: ["paula.reis@pessoal.example"]
+)
+pessoa["status"] # => "created", "updated" ou "unchanged"
+
+client.people.list("erp-1042")            # todas as pessoas do cliente
+client.people.delete("erp-1042", "app-77") # retira o acesso; a pessoa continua no histórico
+client.people.upsert("erp-1042", "app-77", access: true) # devolve o acesso
+```
+
+- **Nunca duplica.** O e-mail (ou o telefone) acha a pessoa que já chegou por e-mail, pelo widget
+  ou por outro sistema, e ela é **adotada** (ganha o seu `external_id`).
+- A mesma pessoa enviada com **outro cliente** é **transferida** para ele.
+- Como no resto da SDK, só o que você passa muda; `nil` limpa (`phone: nil`).
+- Campos: `name`, `email`, `phone`, `role`, `access` (pode usar o atendimento), `is_primary`
+  (contato principal), `extra_emails`, `extra_phones`.
+
+## Lotes — `customers.batch` e `people.batch`
+
+Até **500 itens por chamada** (`Bfocus::BATCH_MAX`). Acima disso a SDK lança `ArgumentError` antes
+de qualquer requisição — ela não divide sozinha, porque o `index` de cada resultado é a posição no
+lote que **você** enviou. Divida assim:
+
+```ruby
+clientes = meus_clientes.map do |c|
+  { external_id: "erp-#{c.id}", name: c.nome, document: c.cnpj, email: c.email }
+end
+
+clientes.each_slice(Bfocus::BATCH_MAX) do |fatia|
+  resultado = client.customers.batch(fatia)
+  resultado["results"].each do |item|
+    next unless item["status"] == "error"
+
+    warn "#{fatia[item['index']][:external_id]}: #{item['error']} (HTTP #{item['code']})"
+  end
+end
+```
+
+- Cada item de `customers.batch` é `external_id` + os campos do `customers.upsert`.
+- Cada item de `people.batch` é **plano**: `customer_external_id` + `external_id` (da pessoa) + os
+  campos do `people.upsert`.
+- Retorno: `results` (um por item: `index`, `status` — `created`/`updated`/`unchanged`/`error` —,
+  `external_id`, `merged_into`, `error` com o código estável e `code` com o status HTTP do item) +
+  `summary` (`created`, `updated`, `unchanged`, `error`).
+- **Um erro não desfaz os outros**: confira `summary["error"]` e registre os itens com erro.
+- Lista vazia devolve o resultado zerado sem fazer requisição.
+- `idempotency_key:` vale para o lote inteiro (um lote = uma chamada).
+
+## Sincronizar clientes e usuários do seu sistema
+
+**Ids com o prefixo do sistema, sem `:`.** Use `-` como separador — `erp-1042` para clientes,
+`app-77` para pessoas — ou UUIDs puros: vários sistemas seus convivem no mesmo bFocus sem colisão. A
+assinatura do widget recusa `:` (é o separador dela), então não use `:` em nenhum `external_id` de
+cliente ou pessoa.
+
+**Carga inicial (no deploy):** clientes em fatias de 500 → vincule cada um ao produto → pessoas em
+fatias de 500.
+
+```ruby
+def carga_inicial(client, clientes, usuarios)
+  clientes.each_slice(Bfocus::BATCH_MAX) do |fatia|
+    r = client.customers.batch(fatia.map { |c| { external_id: "erp-#{c.id}", name: c.nome } })
+    registrar_erros(r, fatia) if r["summary"]["error"].positive?
+  end
+
+  clientes.each { |c| client.customers.products.attach("erp-#{c.id}", "erp-cloud") }
+
+  usuarios.each_slice(Bfocus::BATCH_MAX) do |fatia|
+    itens = fatia.map do |u|
+      { customer_external_id: "erp-#{u.cliente_id}", external_id: "app-#{u.id}",
+        name: u.nome, email: u.email }
+    end
+    r = client.people.batch(itens)
+    registrar_erros(r, fatia) if r["summary"]["error"].positive?
+  end
+end
+```
+
+**Depois, no dia a dia**, espelhe cada evento do seu sistema:
+
+| No seu sistema | No bFocus |
+| --- | --- |
+| criou/alterou cliente | `customers.upsert` |
+| criou/alterou usuário | `people.upsert` |
+| excluiu/desativou usuário | `people.delete` |
+| excluiu cliente | `customers.delete` |
+
+Vincule o cliente ao produto com `customers.products.attach`. Se a resposta trouxer `merged_into`,
+o cadastro foi unificado em outro: atualize o id do seu lado.
+
+**Nunca bloqueie a requisição do seu usuário esperando o bFocus.** Enfileire (job/outbox) e tente de
+novo com backoff; a SDK já repete 429/5xx com a mesma `Idempotency-Key`, e a fila cobre
+indisponibilidades longas.
+
+```ruby
+# app/jobs/bfocus_sync_usuario_job.rb (ActiveJob; o mesmo vale para Sidekiq etc.)
+class BfocusSyncUsuarioJob < ApplicationJob
+  retry_on Bfocus::NetworkError, Bfocus::RateLimitError, Bfocus::ServerError,
+           wait: :polynomially_longer, attempts: 10
+
+  def perform(usuario_id)
+    u = Usuario.find(usuario_id)
+    if u.ativo?
+      BFOCUS.people.upsert("erp-#{u.cliente_id}", "app-#{u.id}", name: u.nome, email: u.email)
+    else
+      BFOCUS.people.delete("erp-#{u.cliente_id}", "app-#{u.id}")
+    end
+  end
+end
+
+# no model, depois de salvar — a requisição do usuário não espera o bFocus:
+after_commit { BfocusSyncUsuarioJob.perform_later(id) }
 ```
 
 ## Produtos
@@ -273,6 +410,11 @@ Todos são `Hash` com chaves string (campos novos podem aparecer a qualquer mome
 | Contato (`customers.contacts.*`) | `id`, `external_id`, `name`, `role`, `email`, `phone`, `notes`, `is_primary`, `created_at`, `updated_at` |
 | Produto vinculado (`customers.products.*`) | `id`, `slug`, `name`, `is_active` |
 | Interação (`customers.interactions.*`) | `id`, `content`, `is_internal`, `author_kind`, `author_name`, `created_at` |
+| Pessoa (`people.list`, `delete`) | `external_id` (pode ser `nil`), `name`, `email`, `phone`, `role`, `access`, `is_primary`, `customer_external_id` |
+| Pessoa gravada (`people.upsert`) | a pessoa + `status` (`created`/`updated`/`unchanged`) |
+| Cliente com identificadores (`customers.identifiers.add`, `remove`) | o cliente + `identifiers` (lista de `{external_id, label, source}`) |
+| Identificadores da pessoa (`people.identifiers.add`, `remove`) | `external_id`, `identifiers` (lista de `{external_id, label, source}`) |
+| Lote (`customers.batch`, `people.batch`) | `results` (lista de `{index, status, external_id, merged_into, error, code}`; `status` ∈ `created`/`updated`/`unchanged`/`error`), `summary` (`{created, updated, unchanged, error}`) |
 | Produto (`products.*`) | `id`, `slug`, `name`, `description`, `color`, `icon`, `is_active`, `sort_order`, `current_version`, `ai_level`, `created_at`, `updated_at` |
 | Release note (`release_notes.*`) | `id`, `product`, `version`, `title`, `description_html`, `audience`, `is_published`, `require_ack_internal`, `require_ack_external`, `published_at`, `created_at`, `updated_at` |
 | Artigo — resumo (`kb.articles.list`, `list_all`) | `id`, `external_id`, `product`, `title`, `excerpt`, `status`, `origin`, `published_at`, `created_at`, `updated_at` |
@@ -373,6 +515,28 @@ assinatura = Bfocus.sign_widget_identity(
 # HMAC-SHA256 em hex minúsculo de "v1:USR-1:ERP 1042" — entregue junto dos dois ids à página
 # que abre o widget.
 ```
+
+### Identidade do widget v2 (com validade)
+
+A v2 carimba o instante na assinatura, então uma assinatura vazada deixa de valer sozinha:
+
+```ruby
+user_hash = Bfocus.sign_widget_identity_v2(
+  ENV.fetch("BFOCUS_WIDGET_SECRET"),
+  "app-77",   # user_external_id: sem ":" (é o separador; a API recusa)
+  "erp-1042"  # customer_external_id: a empresa dele
+)
+# => "v2.<ts>.<hex>", ex.: "v2.1789000000.9c1e…"
+
+# instante explícito (segundos unix, não ms; ou Time) — útil em testes:
+Bfocus.sign_widget_identity_v2(segredo, "app-77", "erp-1042", now: 1_789_000_000)
+```
+
+- `hex` = HMAC-SHA256 em hex minúsculo de `"v2:<ts>:<user_external_id>:<customer_external_id>"`.
+- Vale de **7 dias atrás até 5 minutos à frente**: gere a cada renderização da página, **nunca
+  guarde**. Vai no mesmo lugar da v1 (`userHash` do widget).
+- O id do usuário não pode ter `:` (`ArgumentError`) — use `-` como separador (`app-77`).
+- A v1 continua aceita.
 
 ## Versões
 

@@ -11,8 +11,10 @@ module Bfocus
   #   client.customers.upsert("ERP 1042", name: "Padaria Estrela")
   class Client
     # @return [Resources::Customers] clientes (empresas), com `.contacts`, `.products` e
-    #   `.interactions`.
+    #   `.interactions` e `.identifiers`.
     attr_reader :customers
+    # @return [Resources::People] pessoas (usuários) dos clientes, com `.identifiers`.
+    attr_reader :people
     # @return [Resources::Products] catálogo de produtos.
     attr_reader :products
     # @return [Resources::ReleaseNotes] release notes por produto.
@@ -52,6 +54,7 @@ module Bfocus
       @transport = Transport.new(api_key, base_url: url, timeout: timeout,
                                           max_retries: max_retries, sleeper: sleeper)
       @customers = Resources::Customers.new(@transport)
+      @people = Resources::People.new(@transport)
       @products = Resources::Products.new(@transport)
       @release_notes = Resources::ReleaseNotes.new(@transport)
       @kb = Resources::KnowledgeBase.new(@transport)

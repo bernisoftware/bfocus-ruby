@@ -1,7 +1,12 @@
 # frozen_string_literal: true
 
 module Bfocus
-  # Recursos da API pública: `customers`, `products`, `release_notes`, `kb`, `ai_agents`.
+  # Máximo de itens por chamada de `customers.batch` e `people.batch`. Acima disso a SDK lança
+  # `ArgumentError` antes de qualquer requisição — ela NÃO divide sozinha, porque o `"index"` de
+  # cada resultado é a posição no lote que você enviou. Divida com `each_slice(Bfocus::BATCH_MAX)`.
+  BATCH_MAX = 500
+
+  # Recursos da API pública: `customers`, `people`, `products`, `release_notes`, `kb`, `ai_agents`.
   #
   # Convenções (iguais em todos os métodos):
   #
@@ -60,6 +65,42 @@ module Bfocus
 
       def compact(fields)
         Codec.compact(fields)
+      end
+
+      # Resultado de um lote vazio (sem requisição).
+      def empty_batch_result
+        { "results" => [], "summary" => { "created" => 0, "updated" => 0, "unchanged" => 0, "error" => 0 } }
+      end
+
+      # Valida a lista de um lote (`customers.batch`/`people.batch`) antes de qualquer
+      # requisição e devolve os itens como Hash de chaves string (sem {UNSET}).
+      # @raise [TypeError] não é lista ou item não é Hash.
+      # @raise [ArgumentError] mais de {Bfocus::BATCH_MAX} itens.
+      def batch_items(items, op)
+        if items.is_a?(Hash) || !items.respond_to?(:each_with_index) || !items.respond_to?(:size)
+          raise TypeError, "#{op}: items precisa ser uma lista de Hash."
+        end
+        if items.size > BATCH_MAX
+          raise ArgumentError, "#{op} aceita até #{BATCH_MAX} itens por chamada (recebeu #{items.size}); " \
+                               "divida em lotes de #{BATCH_MAX}."
+        end
+
+        items.each_with_index.map do |item, index|
+          raise TypeError, "#{op}: items[#{index}] precisa ser um Hash." unless item.is_a?(Hash)
+
+          item.each_with_object({}) do |(key, value), out|
+            out[key.to_s] = value unless value.equal?(UNSET)
+          end
+        end
+      end
+
+      # Campo de id obrigatório num item de lote: String (ou número) não vazia.
+      # @raise [ArgumentError]
+      def batch_id!(item, field, op, index)
+        value = item[field]
+        return value unless value.nil? || value.to_s.empty?
+
+        raise ArgumentError, "#{op}: items[#{index}].#{field} é obrigatório."
       end
     end
   end

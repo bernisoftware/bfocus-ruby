@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
-# Unitários: lotes do batch_upsert, list_all, novas tentativas, rede, codificação, erros.
+# Unitários: lotes (batch_upsert, customers/people.batch), list_all, novas tentativas, rede,
+# codificação, erros, assinatura do widget (v1 e v2).
 
 require "date"
 require "socket"
@@ -559,5 +560,117 @@ class ErrorShapeTest < ServerTestCase
       assert_operator klass, :<, Bfocus::Error
     end
     assert_operator Bfocus::Error, :<, StandardError
+  end
+end
+
+class PeopleAndBatchTest < ServerTestCase
+  def batch_response(size)
+    ok({
+         "results" => Array.new(size) do |i|
+           { "index" => i, "status" => "created", "external_id" => "x#{i}", "merged_into" => nil,
+             "error" => nil, "code" => nil }
+         end,
+         "summary" => { "created" => size, "updated" => 0, "unchanged" => 0, "error" => 0 }
+       })
+  end
+
+  def test_limite_exportado
+    assert_equal 500, Bfocus::BATCH_MAX
+  end
+
+  def test_customers_batch_501_erro_sem_requisicao
+    bf = client([])
+    items = Array.new(501) { |i| { "external_id" => "erp-#{i}", "name" => "C#{i}" } }
+    error = assert_raises(ArgumentError) { bf.customers.batch(items) }
+    assert_equal "customers.batch aceita até 500 itens por chamada (recebeu 501); divida em lotes de 500.",
+                 error.message
+    assert_empty requests
+  end
+
+  def test_people_batch_501_erro_sem_requisicao
+    bf = client([])
+    items = Array.new(501) { |i| { "customer_external_id" => "erp-1", "external_id" => "app-#{i}" } }
+    error = assert_raises(ArgumentError) { bf.people.batch(items) }
+    assert_includes error.message, "people.batch aceita até 500 itens por chamada (recebeu 501)"
+    assert_empty requests
+  end
+
+  def test_customers_batch_500_uma_requisicao
+    items = Array.new(500) { |i| { external_id: "erp-#{i}", name: "C#{i}", phone: Bfocus::UNSET } }
+    out = client([batch_response(500)]).customers.batch(items, idempotency_key: "carga-1")
+    assert_equal 1, requests.size
+    body = json_body(requests.first)
+    assert_equal 500, body["items"].size
+    assert_equal({ "external_id" => "erp-0", "name" => "C0" }, body["items"].first)
+    assert_equal "/api/v1/integration/customers/batch", requests.first[:path]
+    assert_equal "carga-1", requests.first[:headers]["idempotency-key"]
+    assert_equal 500, out["summary"]["created"]
+  end
+
+  def test_people_batch_500_uma_requisicao_no_formato_do_fio
+    items = Array.new(500) { |i| { customer_external_id: "erp-1", external_id: "app-#{i}", phone: nil } }
+    client([batch_response(500)]).people.batch(items)
+    assert_equal 1, requests.size
+    body = json_body(requests.first)
+    assert_equal 500, body["items"].size
+    assert_equal({ "customer_external_id" => "erp-1", "person" => { "external_id" => "app-0", "phone" => nil } },
+                 body["items"].first)
+    assert_equal "/api/v1/integration/people/batch", requests.first[:path]
+  end
+
+  def test_batch_valida_itens_antes_de_enviar
+    bf = client([])
+    assert_raises(ArgumentError) { bf.customers.batch([{ "name" => "sem id" }]) }
+    assert_raises(ArgumentError) { bf.people.batch([{ "external_id" => "app-1" }]) }
+    assert_raises(ArgumentError) { bf.people.batch([{ "customer_external_id" => "erp-1" }]) }
+    assert_raises(TypeError) { bf.customers.batch({ "external_id" => "erp-1" }) }
+    assert_raises(TypeError) { bf.people.batch(["app-1"]) }
+    assert_empty requests
+  end
+
+  def test_upsert_so_o_que_veio
+    person = { "external_id" => "app-1", "access" => true, "status" => "unchanged" }
+    client([ok(person)]).people.upsert("erp-1", "app-1")
+    assert_equal({ "person" => {} }, json_body(requests.first))
+    assert_equal "/api/v1/integration/customers/erp-1/people/app-1", requests.first[:path]
+  end
+
+  def test_identifiers_label_nil_explicito_vai_no_corpo
+    client([ok({ "external_id" => "app-1", "identifiers" => [] })]).people.identifiers.add("app-1", "crm-1", label: nil)
+    assert_equal({ "label" => nil }, json_body(requests.first))
+  end
+
+  def test_caminho_invalido
+    bf = client([])
+    assert_raises(ArgumentError) { bf.people.upsert("erp-1", "") }
+    assert_raises(ArgumentError) { bf.customers.identifiers.add("erp-1", "..") }
+    assert_empty requests
+  end
+end
+
+class WidgetSignatureV2Test < Minitest::Test
+  def test_formato_e_agora
+    before = Time.now.to_i
+    signature = Bfocus.sign_widget_identity_v2("bf_whs_x", "app-77", "erp-1042")
+    match = /\Av2\.(\d+)\.([0-9a-f]{64})\z/.match(signature)
+    refute_nil match, signature
+    assert_in_delta before, match[1].to_i, 5
+    assert_in_delta Time.now.to_i, match[1].to_i, 5
+  end
+
+  def test_instante_fixo
+    expected = Bfocus.sign_widget_identity_v2("bf_whs_x", "USR-1", "ACME-1", now: 1_789_000_000)
+    assert_equal expected, Bfocus.sign_widget_identity_v2("bf_whs_x", "USR-1", "ACME-1", now: Time.at(1_789_000_000))
+    assert expected.start_with?("v2.1789000000.")
+  end
+
+  def test_argumentos_invalidos
+    assert_raises(ArgumentError) { Bfocus.sign_widget_identity_v2("", "u", "c") }
+    assert_raises(ArgumentError) { Bfocus.sign_widget_identity_v2(nil, "u", "c") }
+    assert_raises(ArgumentError) { Bfocus.sign_widget_identity_v2("s", nil, "c") }
+    assert_raises(ArgumentError) { Bfocus.sign_widget_identity_v2("s", "u", nil) }
+    assert_raises(ArgumentError) { Bfocus.sign_widget_identity_v2("s", "app:77", "c") }
+    assert_raises(ArgumentError) { Bfocus.sign_widget_identity_v2("s", "u", "c", now: -1) }
+    assert_raises(ArgumentError) { Bfocus.sign_widget_identity_v2("s", "u", "c", now: "1789000000") }
   end
 end

@@ -158,12 +158,21 @@ module Bfocus
       #
       # Só os campos informados mudam; `nil` limpa. `custom_fields` (lista de
       # `{key:, label:, type:, value:, options:}`), quando enviado, **substitui** a lista inteira.
+      #
+      # `kind` é o tipo do CONTRATANTE: `"pj"` (empresa) ou `"pf"` (pessoa física). Não enviando,
+      # o bFocus deduz do documento. `legal_name` (razão social), `state_registration` e
+      # `municipal_registration` são de PJ; `id_document` (RG), de PF.
       # @return [Hash] o cliente.
-      def upsert(external_id, name: UNSET, document: UNSET, email: UNSET, phone: UNSET,
+      def upsert(external_id, name: UNSET, document: UNSET, kind: UNSET, legal_name: UNSET,
+                 state_registration: UNSET, municipal_registration: UNSET, id_document: UNSET,
+                 email: UNSET, phone: UNSET,
                  website: UNSET, notes: UNSET, custom_fields: UNSET, idempotency_key: nil, timeout: nil)
         ext = segment(external_id, "external_id")
         body = compact(
-          "name" => name, "document" => document, "email" => email, "phone" => phone,
+          "name" => name, "document" => document, "kind" => kind, "legal_name" => legal_name,
+          "state_registration" => state_registration,
+          "municipal_registration" => municipal_registration, "id_document" => id_document,
+          "email" => email, "phone" => phone,
           "website" => website, "notes" => notes, "custom_fields" => custom_fields
         )
         call("PUT", "/customers/#{ext}", body: body, idempotency_key: idempotency_key, timeout: timeout)

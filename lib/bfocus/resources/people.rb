@@ -69,8 +69,9 @@ module Bfocus
       # `PUT /customers/{customer_external_id}/people/{person_external_id}`
       #
       # Só o que vier muda; `nil` limpa. O e-mail (ou telefone) acha a pessoa que já chegou por
-      # outro caminho e ela é adotada, nunca duplicada; se ela estava em outro cliente, é
-      # transferida. `access: true` devolve o acesso retirado por {#delete}.
+      # outro caminho e ela é adotada, nunca duplicada. Se ela já existia em OUTRO cliente, NÃO é
+      # transferida: fica ligada também a este (cadastro único, `"linked" => true` na resposta).
+      # `access: true` devolve o acesso retirado por {#delete}.
       #
       # @param access [Boolean] pode abrir chamados/usar o widget.
       # @param is_primary [Boolean] contato principal do cliente.
@@ -88,7 +89,9 @@ module Bfocus
       #   PRÓPRIA ficha: alcançando a pessoa por um identificador EXTRA, a API recusa (409
       #   `PERSON_CLEAR_NOT_OWN_RECORD`) — apagar contato de ficha alcançada por apelido seria
       #   apagar dado de outro sistema.
-      # @return [Hash] a pessoa + `"status"`.
+      # @return [Hash] a pessoa + `"status"`, `"linked"` (já existia em outro cliente e agora está
+      #   ligada a este também) e `"merged_into"` (o id que você mandou era um apelido; este é o
+      #   principal do cadastro).
       def upsert(customer_external_id, person_external_id, name: UNSET, email: UNSET, phone: UNSET,
                  role: UNSET, access: UNSET, is_primary: UNSET, extra_emails: UNSET, extra_phones: UNSET,
                  custom_fields: UNSET, clear: UNSET, idempotency_key: nil, timeout: nil)
@@ -110,9 +113,13 @@ module Bfocus
              timeout: timeout)
       end
 
-      # Retira o acesso da pessoa (ela continua no histórico).
+      # Retira o acesso da pessoa NESTE cliente (ela continua no histórico).
       # `DELETE /customers/{customer_external_id}/people/{person_external_id}`
-      # @return [Hash] a pessoa, com `"access" => false`.
+      #
+      # O acesso é DO VÍNCULO: a mesma pessoa circula por vários clientes e tirar o acesso aqui
+      # não tira o dela nos outros.
+      # @return [Hash] a pessoa, com `"access" => false` e `"unlinked"` (`true` = ela segue ativa
+      #   em outros clientes; `false` = era só deste e foi desligada).
       def delete(customer_external_id, person_external_id, idempotency_key: nil, timeout: nil)
         cid = segment(customer_external_id, "customer_external_id")
         pid = segment(person_external_id, "person_external_id")

@@ -190,7 +190,10 @@ client.people.upsert("erp-1042", "app-77", access: true) # devolve o acesso
 
 - **Nunca duplica.** O e-mail (ou o telefone) acha a pessoa que já chegou por e-mail, pelo widget
   ou por outro sistema, e ela é **adotada** (ganha o seu `external_id`).
-- A mesma pessoa enviada com **outro cliente** é **transferida** para ele.
+- A mesma pessoa enviada com **outro cliente** NÃO é transferida: fica **ligada** também a ele
+  (`"linked" => true` na resposta). O cadastro é único e a mesma pessoa circula por vários clientes.
+- **O acesso é do vínculo.** `delete` (e `access: false`) tira o acesso dela NESTE cliente, não nos
+  outros: `"unlinked" => true` na resposta quer dizer que ela segue ativa em algum outro.
 - Como no resto da SDK, só o que você passa muda; `nil` limpa (`phone: nil`).
 - Campos: `name`, `email`, `phone`, `role`, `access` (pode usar o atendimento), `is_primary`
   (contato principal), `extra_emails`, `extra_phones`, `custom_fields`, `clear`.

@@ -8,6 +8,21 @@ module Bfocus
     # Retorno: `{"external_id", "identifiers" => [{"external_id", "label", "source"}, …]}`.
     # Id que já pertence a outro cadastro: `ConflictError` com `code == "IDENTIFIER_IN_USE"`.
     class PersonIdentifiers < Base
+      # Todos os identificadores da pessoa: o principal (`"external_id"` do retorno) e os extras.
+      # `GET /people/{person_external_id}/identifiers` (escopo `customers:read`). Aceita no
+      # caminho o principal OU qualquer um dos extras.
+      #
+      # É a fonte de verdade para RECONCILIAR: {People#list} mostra só o identificador principal,
+      # então um id que virou extra some de lá sem ter sumido do cadastro — e, sem esta leitura,
+      # era preciso ESCREVER (tentar um {#add}) para descobrir o que tinha acontecido.
+      #
+      # @return [Hash]
+      # @raise [Bfocus::NotFoundError] `PERSON_NOT_FOUND`.
+      def list(person_external_id, timeout: nil)
+        call("GET", "/people/#{segment(person_external_id, 'person_external_id')}/identifiers",
+             timeout: timeout)
+      end
+
       # Liga `extra_id` à pessoa (idempotente). `PUT /people/{person_external_id}/identifiers/{extra_id}`
       #
       # @param label [String, nil] rótulo livre. Não informado = sem corpo.
@@ -35,7 +50,8 @@ module Bfocus
     #
     # Pessoa: `"external_id"` (pode ser `nil` para quem chegou por e-mail/widget sem id),
     # `"name"`, `"email"`, `"phone"`, `"role"`, `"access"`, `"is_primary"`,
-    # `"customer_external_id"`. O `upsert` devolve também `"status"`
+    # `"customer_external_id"` e `"custom_fields"` (lista de `{"key", "label", "value",
+    # "visibility"}`). O `upsert` devolve também `"status"`
     # (`"created"`/`"updated"`/`"unchanged"`).
     #
     # O `external_id` da pessoa é o mesmo `user_external_id` assinado no widget — por isso não
@@ -60,15 +76,28 @@ module Bfocus
       # @param is_primary [Boolean] contato principal do cliente.
       # @param extra_emails [Array<String>] e-mails adicionais.
       # @param extra_phones [Array<String>] telefones adicionais.
+      # @param custom_fields [Array<Hash>] campos personalizados (`{"key", "label", "value"}`).
+      #   Ao contrário de `extra_emails`/`extra_phones`, a lista SUBSTITUI a lista inteira: mande
+      #   o que o seu sistema tem hoje, porque campo que ficar de fora é REMOVIDO. Não passar o
+      #   argumento não mexe em nada. A visibilidade é decidida no bFocus e preservada entre
+      #   sincronizações.
+      # @param clear [Array<String>] campos a APAGAR nesta pessoa: `["email"]`, `["phone"]` ou os
+      #   dois. Apagar é EXPLÍCITO: `phone: nil`, `clear: []` e não passar o argumento continuam
+      #   significando "não mexe" — a SDK não traduz `nil` em `clear`. Campo fora da lista aceita
+      #   é RECUSADO pela API (422 `PERSON_CLEAR_FIELD_INVALID`), não ignorado; e só se limpa a
+      #   PRÓPRIA ficha: alcançando a pessoa por um identificador EXTRA, a API recusa (409
+      #   `PERSON_CLEAR_NOT_OWN_RECORD`) — apagar contato de ficha alcançada por apelido seria
+      #   apagar dado de outro sistema.
       # @return [Hash] a pessoa + `"status"`.
       def upsert(customer_external_id, person_external_id, name: UNSET, email: UNSET, phone: UNSET,
                  role: UNSET, access: UNSET, is_primary: UNSET, extra_emails: UNSET, extra_phones: UNSET,
-                 idempotency_key: nil, timeout: nil)
+                 custom_fields: UNSET, clear: UNSET, idempotency_key: nil, timeout: nil)
         cid = segment(customer_external_id, "customer_external_id")
         pid = segment(person_external_id, "person_external_id")
         person = compact(
           "name" => name, "email" => email, "phone" => phone, "role" => role, "access" => access,
-          "is_primary" => is_primary, "extra_emails" => extra_emails, "extra_phones" => extra_phones
+          "is_primary" => is_primary, "extra_emails" => extra_emails, "extra_phones" => extra_phones,
+          "custom_fields" => custom_fields, "clear" => clear
         )
         call("PUT", "/customers/#{cid}/people/#{pid}",
              body: { "person" => person }, idempotency_key: idempotency_key, timeout: timeout)

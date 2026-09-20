@@ -37,6 +37,7 @@ module Conformance
     "people.list" => ->(c) { c.people.method(:list) },
     "people.delete" => ->(c) { c.people.method(:delete) },
     "people.batch" => ->(c) { c.people.method(:batch) },
+    "people.identifiers.list" => ->(c) { c.people.identifiers.method(:list) },
     "people.identifiers.add" => ->(c) { c.people.identifiers.method(:add) },
     "people.identifiers.remove" => ->(c) { c.people.identifiers.method(:remove) },
     "customers.contacts.list" => ->(c) { c.customers.contacts.method(:list) },

@@ -21,6 +21,12 @@ module Bfocus
     attr_reader :request_id
     # @return [Hash{String=>String}] motivos por campo (erros de validação); `{}` quando não há.
     attr_reader :validation
+    # @return [Hash] o `data` do corpo do erro: o detalhe estruturado que alguns erros trazem
+    #   (`{}` quando não há). É onde vem, por exemplo, de quem é o contato já usado num 409
+    #   `PERSON_EMAIL_TAKEN`/`PERSON_PHONE_TAKEN` (`field`, `owner_external_id`, `owner_name`,
+    #   `owner_customer_external_id`) e o `owner` de um `IDENTIFIER_IN_USE`. A API repete esse
+    #   detalhe em {#validation}, por compatibilidade com as SDKs que ainda não expunham `data`.
+    attr_reader :data
     # @return [Integer, Float, nil] segundos do header `Retry-After` (só em 429).
     attr_reader :retry_after
     # @return [String, nil] escopo que faltou na chave (header `X-Required-Scope`, só em 403).
@@ -29,11 +35,12 @@ module Bfocus
     attr_reader :body
 
     def initialize(message = nil, code: nil, status: 0, request_id: nil, validation: nil,
-                   retry_after: nil, required_scope: nil, body: nil)
+                   retry_after: nil, required_scope: nil, body: nil, data: nil)
       @code = code
       @status = status
       @request_id = request_id
       @validation = validation.is_a?(Hash) ? validation.dup : {}
+      @data = data.is_a?(Hash) ? data.dup : {}
       @retry_after = retry_after
       @required_scope = required_scope
       @body = body

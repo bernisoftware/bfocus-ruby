@@ -515,6 +515,29 @@ class ErrorShapeTest < ServerTestCase
     assert_includes error.message, "atendimento"
   end
 
+  def test_data_traz_o_dono_do_contato_tomado
+    # 409 acionável: `data` diz de QUEM é o contato (e a API repete em `validation`).
+    dono = { "field" => "email", "owner_external_id" => "app-12", "owner_name" => "Paula Reis",
+             "owner_customer_external_id" => "erp-1042" }
+    bf = client([{
+                  "status" => 409, "headers" => {},
+                  "body" => { "code" => 409, "data" => dono, "message" => "PERSON_EMAIL_TAKEN",
+                              "error" => "PERSON_EMAIL_TAKEN", "validation" => dono, "request_id" => "req-9" }
+                },
+                 { "status" => 404, "headers" => {},
+                   "body" => { "code" => 404, "data" => nil, "error" => "CUSTOMER_NOT_FOUND" } }])
+    error = assert_raises(Bfocus::ConflictError) do
+      bf.people.upsert("erp-1042", "app-77", email: "paula@padaria.example")
+    end
+    assert_equal "PERSON_EMAIL_TAKEN", error.code
+    assert_equal dono, error.data
+    assert_equal "erp-1042", error.data["owner_customer_external_id"]
+    assert_equal dono, error.validation
+
+    sem_detalhe = assert_raises(Bfocus::NotFoundError) { bf.customers.get("erp-1042") }
+    assert_empty sem_detalhe.data
+  end
+
   def test_2xx_sem_envelope_e_invalid_response
     bodies = [
       { "status" => 200, "headers" => {}, "body" => "<html>proxy</html>" },

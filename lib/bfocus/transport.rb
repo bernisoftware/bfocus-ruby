@@ -211,6 +211,7 @@ module Bfocus
       human = nil
       request_id = nil
       validation = {}
+      data = {}
 
       if payload.is_a?(Hash)
         err = payload["error"]
@@ -222,6 +223,10 @@ module Bfocus
         end
         human = msg if msg.is_a?(String) && !msg.empty? && msg != code
         validation = payload["validation"] if payload["validation"].is_a?(Hash)
+        # `data` é o detalhe estruturado do erro (de quem é o contato já usado, o dono de um
+        # identificador…). A API também o repete em `validation`, mas quem lê o erro precisa
+        # alcançá-lo sem depender dessa duplicação.
+        data = payload["data"] if payload["data"].is_a?(Hash)
         rid = payload["request_id"]
         request_id = rid if rid.is_a?(String) && !rid.empty?
       elsif !text.strip.empty?
@@ -247,6 +252,7 @@ module Bfocus
         status: status,
         request_id: request_id,
         validation: validation,
+        data: data,
         retry_after: retry_after,
         required_scope: required_scope,
         body: payload.nil? ? present(text) : payload

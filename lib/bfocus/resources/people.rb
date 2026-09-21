@@ -73,6 +73,13 @@ module Bfocus
       # transferida: fica ligada também a este (cadastro único, `"linked" => true` na resposta).
       # `access: true` devolve o acesso retirado por {#delete}.
       #
+      # @param document [String] CPF da pessoa, com ou sem máscara (a resposta traz só os 11
+      #   dígitos). A PESSOA É ÚNICA: o mesmo CPF é sempre o mesmo cadastro, em qualquer produto.
+      #   Id desconhecido + CPF de uma ficha existente → `"merged_into"` = id principal dela (o
+      #   seu id vira identificador extra). Id de uma ficha + CPF de OUTRA → as duas são mescladas
+      #   na hora (`"merged_into"` = a que tinha o CPF). `nil`/vazio NÃO apaga (não é campo do
+      #   `clear`). Erros: 422 `PERSON_DOCUMENT_INVALID` (CPF inválido) e 409
+      #   `PERSON_DOCUMENT_CONFLICT` (a ficha já tem OUTRO CPF — nunca troca sozinho).
       # @param access [Boolean] pode abrir chamados/usar o widget.
       # @param is_primary [Boolean] contato principal do cliente.
       # @param extra_emails [Array<String>] e-mails adicionais.
@@ -93,12 +100,13 @@ module Bfocus
       #   ligada a este também) e `"merged_into"` (o id que você mandou era um apelido; este é o
       #   principal do cadastro).
       def upsert(customer_external_id, person_external_id, name: UNSET, email: UNSET, phone: UNSET,
-                 role: UNSET, access: UNSET, is_primary: UNSET, extra_emails: UNSET, extra_phones: UNSET,
+                 document: UNSET, role: UNSET, access: UNSET, is_primary: UNSET, extra_emails: UNSET, extra_phones: UNSET,
                  custom_fields: UNSET, clear: UNSET, idempotency_key: nil, timeout: nil)
         cid = segment(customer_external_id, "customer_external_id")
         pid = segment(person_external_id, "person_external_id")
         person = compact(
-          "name" => name, "email" => email, "phone" => phone, "role" => role, "access" => access,
+          "name" => name, "email" => email, "phone" => phone, "document" => document, "role" => role,
+          "access" => access,
           "is_primary" => is_primary, "extra_emails" => extra_emails, "extra_phones" => extra_phones,
           "custom_fields" => custom_fields, "clear" => clear
         )
